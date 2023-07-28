@@ -6,7 +6,6 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
-#include <regex.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +15,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
 
+
+#include "mime.h"
+#include "util.h"
 #include "status_code.h"
 
 #define PORT 8080
@@ -27,16 +30,17 @@
 #define ERROR(rc) if ((rc) < 0) return -1
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 
-enum HTTP_METHOD
+typedef enum 
 {
-    GET,
-    HEAD,
-    POST,
-    PUT,
-    DELETE,
-    PATCH,
-    OPTIONS
-};
+    HTTP_METHOD_GET = 0,
+    HTTP_METHOD_HEAD = 1,
+    HTTP_METHOD_POST = 2,
+    HTTP_METHOD_PUT = 3,
+    HTTP_METHOD_DELETE = 4,
+    HTTP_METHOD_PATCH = 5,
+    HTTP_METHOD_OPTIONS = 6,
+    HTTP_METHOD_UNKNOWN = 7
+} HttpMethod;
 
 typedef struct
 {
@@ -47,7 +51,7 @@ typedef struct
 typedef struct
 {
     int sock_fd;
-    char *method;
+    HttpMethod method;
     char *protocol;
     char *path;
     key_pair **params;
@@ -59,6 +63,7 @@ typedef struct
     char *_url_line;
     char **_header_lines;
     int _header_lines_len;
+    struct tm t;
 } http_request;
 
 typedef struct
@@ -73,83 +78,29 @@ typedef int (*request_handler_cb)(http_request *req, http_response *res);
 
 typedef struct
 {
+    HttpMethod method;
     char *request_path;
     request_handler_cb request_handler;
 } request_handler_pair;
 
-static const char wday_name[7][3] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-static const char mon_name[12][3] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-static const char error_message[] =  "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\"><html><head><title>%s %s</title></head><body><h1>%s</h1></body></html>";
+static const char error_body_format[] =  "<!DOCTYPE HTML PUBLIC \"-//IETF//DTD HTML 2.0//EN\"><html><head><title>%s %s</title></head><body><h1>%s</h1></body></html>";
+static const char http_method_names[7][7] = { "GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS" };
 
 static request_handler_pair **request_handlers;
 static size_t request_handlers_size = 0;
-static status_table _status_code_table = {0};
-static status_table *status_code_table = &_status_code_table;
+static int server_fd;
 
-static void init_status_codes()
+static HttpMethod get_method(const char *method_name)
 {
-    status_table_insert(status_code_table, 100, "100", "Continue");
-    status_table_insert(status_code_table, 101, "101", "Switching Protocols");
-    status_table_insert(status_code_table, 102, "102", "Processing");
-    status_table_insert(status_code_table, 103, "103", "Early Hints");
-    status_table_insert(status_code_table, 200, "200", "OK");
-    status_table_insert(status_code_table, 201, "201", "Created");
-    status_table_insert(status_code_table, 202, "202", "Accepted");
-    status_table_insert(status_code_table, 203, "203", "Non-Authoritative Information");
-    status_table_insert(status_code_table, 204, "204", "No Content");
-    status_table_insert(status_code_table, 205, "205", "Reset Content");
-    status_table_insert(status_code_table, 206, "206", "Partial Content");
-    status_table_insert(status_code_table, 207, "207", "Multi-Status");
-    status_table_insert(status_code_table, 208, "208", "Already Reported");
-    status_table_insert(status_code_table, 226, "226", "IM Used");
-    status_table_insert(status_code_table, 300, "300", "Multiple Choices");
-    status_table_insert(status_code_table, 301, "301", "Moved Permanently");
-    status_table_insert(status_code_table, 302, "302", "Found");
-    status_table_insert(status_code_table, 303, "303", "See Other");
-    status_table_insert(status_code_table, 304, "304", "Not Modified");
-    status_table_insert(status_code_table, 307, "307", "Temporary Redirect");
-    status_table_insert(status_code_table, 308, "308", "Permanent Redirect");
-    status_table_insert(status_code_table, 400, "400", "Bad Request");
-    status_table_insert(status_code_table, 401, "401", "Unauthorized");
-    status_table_insert(status_code_table, 402, "402", "Payment Required");
-    status_table_insert(status_code_table, 403, "403", "Forbidden");
-    status_table_insert(status_code_table, 404, "404", "Not Found");
-    status_table_insert(status_code_table, 405, "405", "Method Not Allowed");
-    status_table_insert(status_code_table, 406, "406", "Not Acceptable");
-    status_table_insert(status_code_table, 407, "407", "Proxy Authentication Required");
-    status_table_insert(status_code_table, 408, "408", "Request Timeout");
-    status_table_insert(status_code_table, 409, "409", "Conflict");
-    status_table_insert(status_code_table, 410, "410", "Gone");
-    status_table_insert(status_code_table, 411, "411", "Length Required");
-    status_table_insert(status_code_table, 412, "412", "Precondition Failed");
-    status_table_insert(status_code_table, 413, "413", "Content Too Large");
-    status_table_insert(status_code_table, 414, "414", "URI Too Long");
-    status_table_insert(status_code_table, 415, "415", "Unsupported Media Type");
-    status_table_insert(status_code_table, 416, "416", "Range Not Satisfiable");
-    status_table_insert(status_code_table, 417, "417", "Expectation Failed");
-    status_table_insert(status_code_table, 421, "421", "Misdirected Request");
-    status_table_insert(status_code_table, 422, "422", "Unprocessable Content");
-    status_table_insert(status_code_table, 423, "423", "Locked");
-    status_table_insert(status_code_table, 424, "424", "Failed Dependency");
-    status_table_insert(status_code_table, 425, "425", "Too Early");
-    status_table_insert(status_code_table, 426, "426", "Upgrade Required");
-    status_table_insert(status_code_table, 428, "428", "Precondition Required");
-    status_table_insert(status_code_table, 429, "429", "Too Many Requests");
-    status_table_insert(status_code_table, 431, "431", "Request Header Fields Too Large");
-    status_table_insert(status_code_table, 451, "451", "Unavailable for Legal Reasons");
-    status_table_insert(status_code_table, 500, "500", "Internal Server Error");
-    status_table_insert(status_code_table, 501, "501", "Not Implemented");
-    status_table_insert(status_code_table, 502, "502", "Bad Gateway");
-    status_table_insert(status_code_table, 503, "503", "Service Unavailable");
-    status_table_insert(status_code_table, 504, "504", "Gateway Timeout");
-    status_table_insert(status_code_table, 505, "505", "HTTP Version Not Supported");
-    status_table_insert(status_code_table, 506, "506", "Variant Also Negotiates");
-    status_table_insert(status_code_table, 507, "507", "Insufficient Storage");
-    status_table_insert(status_code_table, 508, "508", "Loop Detected");
-    status_table_insert(status_code_table, 511, "511", "Network Authentication Required");
+    for (int i=0; i < 7; i++)
+    {
+        if (strcasecmp(method_name, http_method_names[i]) == 0)
+            return i;
+    }
+    return HTTP_METHOD_UNKNOWN;
 }
 
-static void add_request_handler(char *path, request_handler_cb handler)
+static void add_request_handler(HttpMethod method, char *path, request_handler_cb handler)
 {
     if (request_handlers_size == 0)
     {
@@ -164,51 +115,11 @@ static void add_request_handler(char *path, request_handler_cb handler)
 
     request_handler_pair *pair = malloc(sizeof(request_handler_pair));
     pair->request_path = path;
+    pair->method = method;
     pair->request_handler = handler;
     request_handlers[request_handlers_size-1] = pair;
 
     return;
-}
-
-bool case_insensitive_compare(const char *s1, const char *s2)
-{
-    while (*s1 && *s2)
-    {
-        if (tolower((unsigned char)*s1) != tolower((unsigned char)*s2))
-        {
-            return false;
-        }
-        s1++;
-        s2++;
-    }
-    return *s1 == *s2;
-}
-
-char *url_decode(const char *src)
-{
-    size_t src_len = strlen(src);
-    char *decoded = malloc(src_len + 1);
-    size_t decoded_len = 0;
-
-    // decode %2x to hex
-    for (size_t i = 0; i < src_len; i++)
-    {
-        if (src[i] == '%' && i + 2 < src_len)
-        {
-            int hex_val;
-            sscanf(src + i + 1, "%2x", &hex_val);
-            decoded[decoded_len++] = hex_val;
-            i += 2;
-        }
-        else
-        {
-            decoded[decoded_len++] = src[i];
-        }
-    }
-
-    // add null terminator
-    decoded[decoded_len] = '\0';
-    return decoded;
 }
 
 char *readline(int sock, char *buffer, size_t buffer_size)
@@ -389,7 +300,8 @@ int parse_url_line(char *buf, http_request *req)
     req->_url_line = buf;
 
     char *strtok_save;
-    req->method = strtok_r(buf, " ", &strtok_save);
+    char *method = strtok_r(buf, " ", &strtok_save);
+    req->method = get_method(method); 
     char *url = strtok_r(NULL, " ", &strtok_save);
     char *prev_token = strtok_r(NULL, " ", &strtok_save);
     char *cur_token = prev_token;
@@ -457,7 +369,7 @@ const char *get_request_header(http_request *req, const char *key)
 {
     for (int i = 0; i < req->headers_len; i++)
     {
-        if (case_insensitive_compare(key, req->headers[i]->key))
+        if (strcasecmp(key, req->headers[i]->key) == 0)
         {
             return (const char *)req->headers[i]->value;
         }
@@ -471,7 +383,7 @@ int get_request_parameter_count(http_request *req, const char *key)
     int count = 0;
     for (int i = 0; i < req->params_len; i++)
     {
-        if (case_insensitive_compare(key, req->params[i]->key))
+        if (strcasecmp(key, req->params[i]->key) == 0)
         {
             count++;
         }
@@ -485,7 +397,7 @@ const char *get_request_parameter_idx(http_request *req, const char *key, int id
     int count = 0;
     for (int i = 0; i < req->params_len; i++)
     {
-        if (case_insensitive_compare(key, req->params[i]->key))
+        if (strcasecmp(key, req->params[i]->key) == 0)
         {
             if (count == idx)
                 return (const char *)req->params[i]->value;
@@ -504,12 +416,14 @@ const char *get_request_parameter(http_request *req, const char *key)
 int parse_request(http_request *req)
 {
     char *buf = NULL;
+    int rc;
 
     buf = readline(req->sock_fd, NULL, 0);
     if (buf == NULL)
         return -1;
 
-    parse_url_line(buf, req);
+    rc = parse_url_line(buf, req);
+    ERROR(rc);
 
     do
     {
@@ -520,7 +434,7 @@ int parse_request(http_request *req)
     req->body = read_content(req->sock_fd, NULL, &req->body_len, MAX_CONTENT_SIZE);
 }
 
-void set_response_header(http_response *res, char* key, char* value)
+void set_response_header(http_response *res, const char* key, const char* value)
 {
     if (res->headers_len == 0)
     {
@@ -546,7 +460,7 @@ int write_response_headers(http_response *res)
     char *out;
     
     out = malloc(2048);
-    snprintf(out, 2047, "HTTP/1.1 %d %s\n", res->status, get_status_message(status_code_table, res->status));
+    snprintf(out, 2047, "HTTP/1.1 %d %s\n", res->status, get_status(res->status).message);
 
     ssize_t rc = send(res->sock_fd, out, strlen(out), 0);
     if (rc < 0) { free(out); return -1; }
@@ -563,7 +477,7 @@ int write_response_headers(http_response *res)
     return 1;
 }
 
-void socket_init(int sock_fd)
+int socket_init(int sock_fd)
 {
     int yes = 1;
     setsockopt(sock_fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
@@ -589,34 +503,20 @@ http_response *http_response_init(int sock_fd)
     return response;
 }
 
-void get_current_gmt_date_time(char *date_time_out)
-{
-    time_t t;
-    struct tm *current_date;
-    t = time(NULL);
-    current_date = gmtime(&t);
-
-    sprintf(date_time_out, "%.3s, %d %.3s %d %.2d:%.2d:%.2d GMT",
-            wday_name[current_date->tm_wday], current_date->tm_mday,
-            mon_name[current_date->tm_mon], 1900 + current_date->tm_year,
-            current_date->tm_hour, current_date->tm_min, current_date->tm_sec);
-    return;
-}
-
 int default_error_handler(http_response *res)
 {
     write_response_headers(res);
-    status_pair *status = get_status(status_code_table, res->status);
-    size_t bytes_to_alloc = strlen(error_message) + strlen(status->status_str) + (strlen(status->message)*2) + 10;
+    StatusCodeType status = get_status(res->status);
+    size_t bytes_to_alloc = strlen(error_body_format) + strlen(status.status_str) + (strlen(status.message)*2) + 10;
     char *err_buf = malloc(bytes_to_alloc);
-    snprintf(err_buf, bytes_to_alloc, error_message, status->status_str, status->message, status->message);
+    snprintf(err_buf, bytes_to_alloc, error_body_format, status.status_str, status.message, status.message);
     int rc = send(res->sock_fd, err_buf, strlen(err_buf), 0);
     free(err_buf);
     ERROR(rc);
     return 1;
 }
 
-int stream_file(http_response *res, const char *file)
+int stream_file(http_response *res, char *file)
 {
     int rc, bytes_read, bytes_written;
     char size_buf[64];
@@ -638,7 +538,7 @@ int stream_file(http_response *res, const char *file)
     res->status = 200;
     snprintf(size_buf, 63, "%lu", size);
     set_response_header(res, "Content-Length", size_buf);
-    set_response_header(res, "Content-Type", "application/octet-stream");
+    set_response_header(res, "Content-Type", get_mime_type(file));
     write_response_headers(res);
 
     out_buf = malloc(OUT_BUFFER_SIZE);
@@ -685,11 +585,13 @@ void add_default_headers(http_response *res)
     set_response_header(res, "Server", "ezRemote Client");
 }
 
-request_handler_cb get_request_handler(const char *path)
+request_handler_cb get_request_handler(HttpMethod method, const char *path)
 {
+    if (path == NULL)
+        return NULL;
     for (size_t i=0; i < request_handlers_size; i++)
     {
-        if (strcmp(path, request_handlers[i]->request_path) == 0)
+        if (request_handlers[i]->method == method && strcmp(path, request_handlers[i]->request_path) == 0)
             return request_handlers[i]->request_handler;
     }
 
@@ -699,17 +601,28 @@ request_handler_cb get_request_handler(const char *path)
 void *handle_client(void *arg)
 {
     int client_fd = *((int *)arg);
-    socket_init(client_fd);
+    int rc = socket_init(client_fd);
 
     http_request *request = http_request_init(client_fd);
     http_response *response = http_response_init(client_fd);
 
     parse_request(request);
+
     add_default_headers(response);
 
-    request_handler_cb handler = get_request_handler(request->path);
-    if (handler != NULL)
-        handler(request, response);
+    if (request->method == HTTP_METHOD_UNKNOWN)
+    {
+        response->status = 405;
+        default_error_handler(response);
+    }
+    else
+    {
+        request_handler_cb handler = get_request_handler(request->method, request->path);
+        if (handler != NULL)
+        {
+            handler(request, response);
+        }
+    }
 
     http_request_free(request);
     http_response_free(response);
@@ -719,14 +632,18 @@ void *handle_client(void *arg)
     return NULL;
 }
 
+void terminate()
+{
+    close(server_fd);
+    shutdown(server_fd, SHUT_RD);
+}
+
 int main(int argc, char *argv[])
 {
-    int server_fd;
     struct sockaddr_in server_addr;
 
-    init_status_codes();
-
-    add_request_handler("/", root_handler);
+    add_request_handler(HTTP_METHOD_GET, "/", root_handler);
+    add_request_handler(HTTP_METHOD_GET, "/index.html", index_handler);
 
     // create server socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
@@ -749,6 +666,8 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    atexit(terminate);
+
     // listen for connections
     if (listen(server_fd, 10) < 0)
     {
@@ -766,8 +685,8 @@ int main(int argc, char *argv[])
 
         // accept client connection
         if ((*client_fd = accept(server_fd,
-                                 (struct sockaddr *)&client_addr,
-                                 &client_addr_len)) < 0)
+                                (struct sockaddr *)&client_addr,
+                                &client_addr_len)) < 0)
         {
             perror("accept failed");
             continue;
@@ -779,6 +698,5 @@ int main(int argc, char *argv[])
         pthread_detach(thread_id);
     }
 
-    close(server_fd);
     return 0;
 }

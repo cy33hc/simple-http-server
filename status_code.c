@@ -1,70 +1,79 @@
 #include "status_code.h"
 
-status_pair* make_status_pair(int status, char* status_str, const char* message)
-{
-    status_pair* pair = (status_pair*) malloc(sizeof(status_pair));
-    pair->status = status;
-    pair->status_str = status_str;
-    pair->message = message;
-}
-
-void status_table_clear(status_table *tbl)
-{
-    for (size_t i=0; i < tbl->size; i++)
+static const StatusCodeType status_code_list[] =
     {
-        free(tbl->statuses[i]);
-        tbl->statuses[i] = NULL;
-    }
-    free(tbl->statuses);
-    tbl->size = 0;
-}
+        { 100, "100", "Continue" },
+        { 101, "101", "Switching Protocols" },
+        { 102, "102", "Processing" },
+        { 103, "103", "Early Hints" },
+        { 200, "200", "OK" },
+        { 201, "201", "Created" },
+        { 202, "202", "Accepted" },
+        { 203, "203", "Non-Authoritative Information" },
+        { 204, "204", "No Content" },
+        { 205, "205", "Reset Content" },
+        { 206, "206", "Partial Content" },
+        { 207, "207", "Multi-Status" },
+        { 208, "208", "Already Reported" },
+        { 226, "226", "IM Used" },
+        { 300, "300", "Multiple Choices" },
+        { 301, "301", "Moved Permanently" },
+        { 302, "302", "Found" },
+        { 303, "303", "See Other" },
+        { 304, "304", "Not Modified" },
+        { 307, "307", "Temporary Redirect" },
+        { 308, "308", "Permanent Redirect" },
+        { 400, "400", "Bad Request" },
+        { 401, "401", "Unauthorized" },
+        { 402, "402", "Payment Required" },
+        { 403, "403", "Forbidden" },
+        { 404, "404", "Not Found" },
+        { 405, "405", "Method Not Allowed" },
+        { 406, "406", "Not Acceptable" },
+        { 407, "407", "Proxy Authentication Required" },
+        { 408, "408", "Request Timeout" },
+        { 409, "409", "Conflict" },
+        { 410, "410", "Gone" },
+        { 411, "411", "Length Required" },
+        { 412, "412", "Precondition Failed" },
+        { 413, "413", "Content Too Large" },
+        { 414, "414", "URI Too Long" },
+        { 415, "415", "Unsupported Media Type" },
+        { 416, "416", "Range Not Satisfiable" },
+        { 417, "417", "Expectation Failed" },
+        { 421, "421", "Misdirected Request" },
+        { 422, "422", "Unprocessable Content" },
+        { 423, "423", "Locked" },
+        { 424, "424", "Failed Dependency" },
+        { 425, "425", "Too Early" },
+        { 426, "426", "Upgrade Required" },
+        { 428, "428", "Precondition Required" },
+        { 429, "429", "Too Many Requests" },
+        { 431, "431", "Request Header Fields Too Large" },
+        { 451, "451", "Unavailable for Legal Reasons" },
+        { 500, "500", "Internal Server Error" },
+        { 501, "501", "Not Implemented" },
+        { 502, "502", "Bad Gateway" },
+        { 503, "503", "Service Unavailable" },
+        { 504, "504", "Gateway Timeout" },
+        { 505, "505", "HTTP Version Not Supported" },
+        { 506, "506", "Variant Also Negotiates" },
+        { 507, "507", "Insufficient Storage" },
+        { 508, "508", "Loop Detected" },
+        { 511, "511", "Network Authentication Required" }
+    };
+static size_t status_code_list_len = 59;
 
-size_t find_status(status_table *tbl, int status)
+StatusCodeType get_status(int status)
 {
-    for (size_t i=0; i < tbl->size; i++)
+    unsigned int i;
+    StatusCodeType default_status_code = { 404, "404", "Not Found" };
+
+    for (i = 0; i < 47; i++)
     {
-        if (tbl->statuses[i]->status == status)
-            return i;
+        if (status_code_list[i].status == status)
+            return status_code_list[i];
     }
 
-    return -1;
-}
-
-const char* get_status_message(status_table *tbl, int status)
-{
-    size_t i = find_status(tbl, status);
-    if (i < 0)
-        return "";
-
-    return tbl->statuses[i]->message;
-}
-
-void status_table_insert(status_table *tbl, int status, char* status_str, const char* message)
-{
-    if (tbl->size == 0)
-    {
-        tbl->size = 1;
-        tbl->statuses = malloc(sizeof(status_pair*));
-    }
-    else
-    {
-        size_t i = find_status(tbl, status);
-        if (i != -1)
-        {
-            tbl->statuses[i]->message = message;
-            return;
-        }
-
-        tbl->size++;
-        tbl->statuses = realloc(tbl->statuses, tbl->size * sizeof(status_pair*));
-    }
-
-    status_pair* pair = make_status_pair(status, status_str, message);
-    tbl->statuses[tbl->size-1] = pair;
-}
-
-status_pair *get_status(status_table *tbl, int status)
-{
-    size_t i = find_status(tbl, status);
-    return tbl->statuses[i];
+    return default_status_code;
 }

@@ -1,7 +1,9 @@
 CC=gcc
 CFLAGS=-I.
 DEPS=
-OBJ=status_code.o \
+OBJ=util.o \
+    mime.o \
+    status_code.o \
     server.o
     
 USERID=123456789
